@@ -12,7 +12,6 @@ def generate_discrete_chain(d, seed=1234):
 	np.random.seed(seed)
 
 	# Generate random stochastic matrix
-	K = np.eye(d)
 	K = np.random.uniform(size=(d, d))
 	K = K / K.sum(axis=1, keepdims=True)
 

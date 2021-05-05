@@ -99,21 +99,30 @@ class CircularCoupler():
 		hatthetas = func(self.ys[:, :, converged]).mean(axis=0)
 		return hatthetas, theta
 	
-	def auxiliary_diagnostics(self, k, r): # r must divide N
+	def auxiliary_diagnostics(self, k=None, r=10): # r must divide N
+		if k is None:
+			k = self.N / 2
+		if self.N % r != 0:
+			raise ValueError(f"r {r} must divide N {self.N}")
+
+		# This follows the notation from Neal 1999
 		cis = []
 		for i in range(0, r):
 			s = i*self.N // r
 			# reps-dimensional vector
-			zis = sample_discrete_rvs(self.pi0, 1, seed=0)
-			ci = 0
+			zis = self.pi0()
+			ci = np.zeros(self.reps)
 			for t in range(s+1, s+k+1):
-				tnew = t % self.N
-				if zis != self.ys[t-1, :, 0]:
+				if zis != self.ys[t-1]:
 					break
-				ci += 1
-				zis = sample_discrete_rvs(K[zis].T, 1, seed=t)
+				zis = self.sample_next(
+					seed=t, xprev=zis, yprev=self.ys[t-1],
+				)
+				converged_flags = np.all(zis == self.ys[t-1], axis=0)
+				ci[~converged_flags] = ci[~converged_flags] + 1
 			cis.append(ci)
-		return cis
+
+		return np.array(cis)
 
 ################ Markov Chain with Discrete State Space #################
 

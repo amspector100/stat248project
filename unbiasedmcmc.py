@@ -115,7 +115,7 @@ class UnbiasedMCMC():
 			### Reset convergence flags
 			if verbose and seed % 100 == 0 and seed != 0:
 				print(f"At iteration={seed}, {100*self.converged.mean()}% of the chains are converged")
-			if np.all(self.converged) and seed >= self.m:
+			if np.all(self.converged) and seed >= self.m - 1:
 				if verbose:
 					print(f"Breaking at iteration={seed}")
 				break
@@ -124,6 +124,20 @@ class UnbiasedMCMC():
 		self.xs = np.array(self.xs)
 		self.ys = np.array(self.ys)
 
+	def compute_all_Hjs(self, h=lambda x: x):
+
+		# Precomputation
+		self.taus = self.taus.astype(np.int32)
+		hx = h(self.xs[self.lag:]).reshape(-1, self.reps) # N x reps
+		hy = h(self.ys).reshape(-1, self.reps)
+		diff = hx - hy
+		cumdiff = np.cumsum(diff, axis=0)
+		cumtaus = cumdiff[self.taus-self.lag, np.arange(self.reps)]
+
+		# Compute regular estimates Hj
+		Hjs = hx[0:self.m] - cumdiff[0:self.m] + cumtaus
+		return Hjs
+
 	def compute_Hkm(self, k, h=lambda x: x):
 		"""
 		h : function we are interested in computing the expectation of.
@@ -131,30 +145,62 @@ class UnbiasedMCMC():
 		"""
 		if k < self.lag:
 			raise ValueError(f"k {k} must be greater than the lag {self.lag}")
-		if np.any(np.isnan(self.taus)):
-			raise ValueError("Some of the chains did not converge---unbiased estimation is not possible.")
 
-		self.taus = self.taus.astype(np.int32)
+		# Compute Hjs and sum
+		Hjs = self.compute_all_Hjs(h=h)
+		return Hjs[k:self.m].mean(axis=0)
 
-		hx = h(self.xs[self.lag:]).reshape(-1, self.reps)
-		hy = h(self.ys).reshape(-1, self.reps)
-		diff = hx - hy
-		#print("hx \n", hx)
-		#print("hy \n", hy)
-		#print("diff \n", diff)
-		cumdiff = np.cumsum(diff, axis=0)
-		#print("cumdiff \n", cumdiff)
+	def compute_all_Hkm(self, h=lambda x: x):
+		# Compute Hjs from k=1 to m
+		Hjs = self.compute_all_Hjs(h=h)
 
-		# Compute regular estimators
-		Hkm = 0
-		for j in range(k, self.m):
-			Hj = hx[j-self.lag] + cumdiff[self.taus-self.lag, np.arange(self.reps)] - cumdiff[j-self.lag]
-			#print(cumdiff[self.taus-1-self.lag, np.arange(self.reps)].shape)
-			#print(f"Hj for j={j}", Hj, f"start={cumdiff[j-self.lag]}", f"end={cumdiff[self.taus-self.lag, np.arange(self.reps)]}")
-			Hkm += Hj
+		# Flip and do cumulative sum
+		Hkms = np.cumsum(np.flip(Hjs, axis=0), axis=0)
+		Hkms = Hkms / np.arange(1, Hkms.shape[0]+1).reshape(-1, 1)
+		return np.flip(Hkms, axis=0)
 
-		# Time-averaged estimator
-		return Hkm / (self.m-k)
+	def compute_Hkm_diff_m(self, h=lambda x: x, min_m=None):
+
+		if min_m is None:
+			min_m = max(2, int(0.1 * self.m))
+
+		# Compute Hjs
+		Hjs = self.compute_all_Hjs(h=h)
+		cumHjs = np.cumsum(Hjs, axis=0)
+
+		# Compute Hkm for various m 
+		ms = np.arange(min_m, self.m).astype(np.int32)
+		ks = np.round((ms + 1) / 2).astype(np.int32)
+		Hkms = (cumHjs[ms] - cumHjs[ks-1]) / (ms - ks + 1).reshape(-1, 1)
+		return Hkms
+
+	def compute_burnin_ests(self, h=lambda x: x):
+
+		# flip + cumsum to compute various burnin estimators
+		hx = h(self.xs[self.lag:self.m+self.lag]).reshape(self.m, self.reps)
+		hx = np.flip(hx, axis=0)
+		cumhx = np.cumsum(hx, axis=0)
+		burnin_ests = cumhx / np.arange(1, self.m+1, 1).reshape(-1, 1)
+
+		# Flip back
+		return np.flip(burnin_ests, axis=0)
+
+	def compute_burnin_diff_m(self, h=lambda x: x, min_m=None):
+
+		if min_m is None:
+			min_m = max(2, int(0.1 * self.m))
+
+		# Cumsum without flipping
+		hx = h(self.xs[self.lag:self.m+self.lag]).reshape(self.m, self.reps)
+		cumhx = np.cumsum(hx, axis=0)
+		ms = np.arange(min_m, self.m).astype(np.int32)
+		burnins = np.round((ms + 1) / 2).astype(np.int32)
+
+		return (cumhx[ms] - cumhx[burnins-1]) / (ms - burnins + 1).reshape(-1, 1)
+
+
+
+
 
 class DiscreteUMCMC(utils.DiscreteSampler, UnbiasedMCMC):
 	""" Circular coupler for discrete markov chains """
